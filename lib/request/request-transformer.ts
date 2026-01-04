@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import { logDebug, logWarn } from "../logger.js";
 import { TOOL_REMAP_MESSAGE } from "../prompts/codex.js";
 import { CODEX_OPENCODE_BRIDGE } from "../prompts/codex-opencode-bridge.js";
@@ -392,6 +393,13 @@ function extractAgentsMdContent(contentText: string): string | null {
 export async function filterOpenCodeSystemPrompts(
   input: InputItem[] | undefined,
 ): Promise<InputItem[] | undefined> {
+  // DEBUG: Write immediately at function entry
+  try {
+    const fs = await import("node:fs");
+    fs.writeFileSync("/tmp/filter-entry.log", `ENTERED filterOpenCodeSystemPrompts at ${new Date().toISOString()}\ninput type: ${typeof input}\nis array: ${Array.isArray(input)}\nlength: ${Array.isArray(input) ? input.length : 'N/A'}\n`);
+  } catch (e) {
+    // ignore
+  }
   if (!Array.isArray(input)) return input;
 
   // Fetch cached OpenCode prompt for verification
@@ -405,6 +413,10 @@ export async function filterOpenCodeSystemPrompts(
   const result: InputItem[] = [];
   const customInstructions: InputItem[] = [];
 
+  // Write debug to file since console might be swallowed
+  const debugLines: string[] = [];
+  debugLines.push(`Processing ${input.length} items, cachedPrompt: ${cachedPrompt ? 'loaded' : 'null'}`);
+
   for (const item of input) {
     // Keep user messages as-is
     if (item.role === "user") {
@@ -413,10 +425,12 @@ export async function filterOpenCodeSystemPrompts(
     }
 
     const contentText = getContentText(item);
+    debugLines.push(`Item role=${item.role}, contentLength=${contentText.length}, startsWithAgent=${contentText.startsWith("You are a coding agent")}`);
     
     // Extract "Instructions from:" blocks from ANY developer message
     // This ensures AGENTS.md is preserved regardless of prompt detection
     const agentsMdContent = extractAgentsMdContent(contentText);
+    debugLines.push(`agentsMdContent found: ${agentsMdContent ? 'yes, length=' + agentsMdContent.length : 'no'}`);
     if (agentsMdContent) {
       customInstructions.push({
         type: "message",
@@ -449,6 +463,20 @@ export async function filterOpenCodeSystemPrompts(
 
   // Insert custom instructions before user messages
   // Order after bridge prepend: [bridge, custom_instructions, user_messages]
+  debugLines.push(`Returning ${customInstructions.length} customInstructions + ${result.length} result items`);
+  
+  // Write debug to /tmp (simple, always writable)
+  try {
+    const fs = await import("node:fs");
+    fs.appendFileSync("/tmp/agents-extraction-debug.log", `\n=== ${new Date().toISOString()} ===\n` + debugLines.join("\n") + "\n");
+  } catch (e) {
+    // Try another approach if fs fails
+    try {
+      const { execSync } = await import("node:child_process");
+      execSync(`echo "${debugLines.join("\\n")}" >> /tmp/agents-extraction-debug2.log`);
+    } catch { /* ignore */ }
+  }
+  
   return [...customInstructions, ...result];
 }
 
@@ -620,7 +648,7 @@ export async function transformRequestBody(
   // Filter and transform input
   if (body.input && Array.isArray(body.input)) {
     // Debug: Log original input message IDs before filtering
-    const originalIds = body.input
+    const originalIds = body.input!
       .filter((item) => item.id)
       .map((item) => item.id);
     if (originalIds.length > 0) {
@@ -645,6 +673,13 @@ export async function transformRequestBody(
       logDebug(`Successfully removed all ${originalIds.length} message IDs`);
     }
 
+    // DEBUG: Write codexMode status to file
+    const fs = await import("node:fs");
+    fs.appendFileSync(
+      "/tmp/codex-transform-debug.log",
+      `[${new Date().toISOString()}] codexMode=${codexMode}, hasInput=${!!body.input}, inputLength=${body.input?.length}\n`
+    );
+
     if (codexMode) {
       // CODEX_MODE: Remove OpenCode system prompt, add bridge prompt
       body.input = await filterOpenCodeSystemPrompts(body.input);
@@ -659,11 +694,11 @@ export async function transformRequestBody(
     // convert them to messages to preserve context while avoiding API errors
     if (body.input) {
       const functionCallIds = new Set(
-        body.input
+        body.input!
           .filter((item) => item.type === "function_call" && item.call_id)
           .map((item) => item.call_id),
       );
-      body.input = body.input.map((item) => {
+      body.input = body.input!.map((item) => {
         if (
           item.type === "function_call_output" &&
           !functionCallIds.has(item.call_id)
@@ -719,7 +754,7 @@ export async function transformRequestBody(
 
     // Validate and fix the existing effort for model-specific constraints
     const validatedEffort = validateReasoningEffort(
-      existingEffort,
+      existingEffort!,
       normalizedModel,
     );
 
